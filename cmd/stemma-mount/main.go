@@ -44,6 +44,7 @@ func main() {
 		fuse.AllowOther(), fuse.DefaultPermissions(),
 		fuse.FSName("stemma"), fuse.LocalVolume(),
 		fuse.Subtype("stemma"), fuse.VolumeName("stemma"),
+		fuse.AllowDev(), fuse.AllowSUID(),
 	)
 	if err != nil {
 		log.Fatalf("unable to mount filesytem: %s", err)

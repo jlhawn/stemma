@@ -45,6 +45,10 @@ type ObjectStore interface {
 	// NewWriter begins the process of writing a new directory using this
 	// store.
 	NewDirectoryWriter(estimatedSize uint) (DirectoryWriter, error)
+	// Get the application object with the given digest from this store.
+	GetApplication(digest Digest) (Application, error)
+	// Put the given application into this object store.
+	PutApplication(a Application) (Descriptor, error)
 }
 
 // FileWriter provides a handle for writing a new file object into a FileStore.
@@ -64,13 +68,14 @@ type FileWriter interface {
 // TagStore is the interface for managing mappings of simple strings to a
 // content-addressable filesystem object digest.
 type TagStore interface {
-	Get(tag string) (digest Digest, err error)
-	Set(tag, digest Digest) error
-	List() (map[string]Digest, error)
+	Get(tag string) (Descriptor, error)
+	Set(tag string, desc Descriptor) error
+	List() (tags []string, err error)
 	Remove(tag string) error
 }
 
-// MountSet is the interface for managing mounts of filesystem directories.
+// MountSet is the interface for managing mounts of application container
+// rootfs directories.
 type MountSet interface {
 	List() (digests []Digest, err error)
 	Add(digest Digest) error

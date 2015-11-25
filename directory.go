@@ -179,7 +179,7 @@ func (w *directoryWriter) Commit() (Descriptor, error) {
 
 	if err := w.directory.Marshal(objectWriter); err != nil {
 		objectWriter.Cancel()
-		return nil, fmt.Errorf("unable to marshal directory object: %s", err)
+		return nil, fmt.Errorf("unable to encode directory object: %s", err)
 	}
 
 	desc, err := objectWriter.Commit()

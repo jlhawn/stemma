@@ -176,7 +176,7 @@ func (r *Repository) PutHeader(header Header) (Descriptor, error) {
 
 	if err := header.Marshal(objectWriter); err != nil {
 		objectWriter.Cancel()
-		return nil, fmt.Errorf("unable to marshal header object: %s", err)
+		return nil, fmt.Errorf("unable to encode header object: %s", err)
 	}
 
 	return objectWriter.Commit()

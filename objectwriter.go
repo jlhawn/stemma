@@ -1,6 +1,7 @@
 package stemma
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +10,7 @@ import (
 
 type objectWriter struct {
 	r            *Repository
-	multiWriter  io.Writer
+	buffer       *bufio.Writer
 	tempFile     *os.File
 	digester     Digester
 	objectType   ObjectType
@@ -30,16 +31,16 @@ func (r *Repository) newObjectWriter(objectType ObjectType) (*objectWriter, erro
 	}
 
 	return &objectWriter{
-		r:           r,
-		multiWriter: io.MultiWriter(tempFile, digester),
-		tempFile:    tempFile,
-		digester:    digester,
-		objectType:  objectType,
+		r:          r,
+		buffer:     bufio.NewWriter(io.MultiWriter(tempFile, digester)),
+		tempFile:   tempFile,
+		digester:   digester,
+		objectType: objectType,
 	}, nil
 }
 
 func (w *objectWriter) Write(p []byte) (n int, err error) {
-	n, err = w.multiWriter.Write(p)
+	n, err = w.buffer.Write(p)
 	w.bytesWritten += uint64(n)
 	return
 }
@@ -55,11 +56,15 @@ func (w *objectWriter) Commit() (d Descriptor, err error) {
 		}
 	}()
 
+	if err := w.buffer.Flush(); err != nil {
+		return nil, fmt.Errorf("unable to flush write buffer: %s", err)
+	}
+
 	if err := w.tempFile.Close(); err != nil {
 		return nil, fmt.Errorf("unable to close temporary file: %s", err)
 	}
 
-	digest := w.digester.Digest()
+	digest := w.Digest()
 	objectPath := w.r.getObjectPath(digest)
 
 	_, err = os.Lstat(objectPath)

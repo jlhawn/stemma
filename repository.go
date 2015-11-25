@@ -6,23 +6,66 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+
+	"github.com/jlhawn/stemma/sysutil"
 )
 
 // Repository represents a content-addressable repository of filesystem objects
 // and application container metadata.
 type Repository struct {
 	root string
+	// Advisory lock for the repository. Acquire an exclusive lock
+	// if your opperation may modify refs or delete objects. Acquire a
+	// shared lock if your opperation will only be reading refs or reading
+	// or writing objects. Note: a shared lock for writing objects is okay
+	// due to the content-addressibility of the object store.
+	*sysutil.Lock
 
 	tags   TagStore
 	mounts MountSet
 }
 
+var _ ObjectStore = &Repository{}
+
 // NewRepository returns a repository storing objects at the given root
 // directory.
-func NewRepository(root string) *Repository {
+func NewRepository(root string) (*Repository, error) {
+	rootDir, err := os.Open(root)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open directory %q: %s", root, err)
+	}
+
+	if fi, err := rootDir.Stat(); err != nil {
+		return nil, fmt.Errorf("unable to stat directory %q: %s", root, err)
+	} else if !fi.IsDir() {
+		return nil, fmt.Errorf("unable to use directory %q: not a directory", root)
+	}
+
+	objectsDirPath := filepath.Join(root, "objects")
+	if err := os.MkdirAll(objectsDirPath, os.FileMode(0755)); err != nil {
+		return nil, fmt.Errorf("unable to make objects directory: %s", err)
+	}
+
+	tagsDirPath := filepath.Join(root, "refs", "tags")
+	if err := os.MkdirAll(tagsDirPath, os.FileMode(0755)); err != nil {
+		return nil, fmt.Errorf("unable to make tags directory: %s", err)
+	}
+
+	tagStore, err := NewTagStore(tagsDirPath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize tag store: %s", err)
+	}
+
 	return &Repository{
 		root: root,
-	}
+		Lock: sysutil.NewLock(rootDir),
+		tags: tagStore,
+	}, nil
+}
+
+// TagStore returns the Tag Store for this repository.
+func (r *Repository) TagStore() TagStore {
+	return r.tags
 }
 
 func (r *Repository) getObjectPath(digest Digest) string {
@@ -60,7 +103,7 @@ Repository Layout:
 func (r *Repository) StoreFile(path string) (Descriptor, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("unable to open file %q: %s", err)
+		return nil, fmt.Errorf("unable to open file %q: %s", path, err)
 	}
 	defer file.Close()
 

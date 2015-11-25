@@ -15,37 +15,45 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Println("Usage: stemma-storedir PATH")
+		fmt.Println("Usage: stemma-show-app DIGEST|TAG")
 		os.Exit(1)
 	}
 
-	repo := stemma.NewRepository(".")
-
-	targetDir := flag.Arg(0)
-	objDesc, err := repo.StoreDirectory(targetDir)
+	repo, err := stemma.NewRepository(".")
 	if err != nil {
-		log.Fatalf("unable to store directory %q: %s", targetDir, err)
+		log.Fatalf("unable to initialize repository: %s", err)
 	}
 
-	header, err := stemma.NewHeader(targetDir)
+	// Acquire a shared lock on the repository so we can freely read its
+	// contents.
+	if err := repo.SharedLock(); err != nil {
+		log.Fatalf("unable to acquire exclusive repo lock: %s", err)
+	}
+	defer repo.Unlock()
+
+	appDigest, err := repo.ResolveRef(flag.Arg(0))
 	if err != nil {
-		log.Fatalf("unable to make target directory header: %s", err)
+		log.Fatalf("unable to resolve reference: %s", err)
 	}
 
-	hdrDesc, err := repo.PutHeader(header)
+	app, err := repo.GetApplication(appDigest)
 	if err != nil {
-		log.Fatalf("unable to store target directory header: %s", err)
+		log.Fatalf("unable to get application: %s", err)
 	}
 
+	prettyPrintApp(repo, app)
+}
+
+func prettyPrintApp(repo *stemma.Repository, app stemma.Application) {
 	entry := stemma.DirectoryEntry{
 		Name:           "/",
 		Type:           stemma.DirentTypeDirectory,
-		HeaderDigest:   hdrDesc.Digest(),
-		HeaderSize:     hdrDesc.Size(),
-		ObjectDigest:   objDesc.Digest(),
-		ObjectSize:     objDesc.Size(),
-		NumSubObjects:  objDesc.NumSubObjects(),
-		SubObjectsSize: objDesc.SubObjectsSize(),
+		HeaderDigest:   app.Rootfs.Header.Digest,
+		HeaderSize:     app.Rootfs.Header.Size,
+		ObjectDigest:   app.Rootfs.Directory.Digest,
+		ObjectSize:     app.Rootfs.Directory.Size,
+		NumSubObjects:  app.Rootfs.Directory.NumSubObjects,
+		SubObjectsSize: app.Rootfs.Directory.SubObjectsSize,
 	}
 
 	prettyPrint(repo, entry, "/", "")

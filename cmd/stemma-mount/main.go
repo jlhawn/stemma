@@ -1,13 +1,14 @@
 package main
 
 import (
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
-	"hash/crc64"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"bazil.org/fuse"
@@ -69,10 +70,23 @@ func main() {
 	}
 }
 
+type nodeRef struct {
+	node  fs.Node
+	count uint
+}
+
 // FS implements a read-only FUSE filesystem backed by a content-addressable
 // object store.
 type FS struct {
-	root fs.Node
+	objects stemma.ObjectStore
+	root    fs.Node
+	time    time.Time
+
+	// A cache of valid nodes mapped by inode number. Nodes are reference
+	// counted. An inode number should always map to the same node due to
+	// content-addressability.
+	nodeRefs map[uint64]nodeRef
+	sync.Mutex
 }
 
 func newFS(objects stemma.ObjectStore, appDigest stemma.Digest) (*FS, error) {
@@ -92,18 +106,21 @@ func newFS(objects stemma.ObjectStore, appDigest stemma.Digest) (*FS, error) {
 		SubObjectsSize: app.Rootfs.Directory.SubObjectsSize,
 	}
 
+	fs := &FS{
+		objects:  objects,
+		nodeRefs: make(map[uint64]nodeRef, 1024),
+		time:     time.Now(),
+	}
+
 	var rootInode uint64
-	rootNode, err := subNode(objects, entry, time.Now(), rootInode)
-	if err != nil {
+	if fs.root, err = fs.makeNode(entry, rootInode); err != nil {
 		return nil, fmt.Errorf("unable to make root node: %s", err)
 	}
 
 	// Hack to make the root dir have the same inode and parent inode.
-	rootNode.(*Dir).inode = rootInode
+	fs.root.(*Dir).inode = rootInode
 
-	return &FS{
-		root: rootNode,
-	}, nil
+	return fs, nil
 }
 
 // Root is called to obtain the Node for the file system root.
@@ -111,9 +128,110 @@ func (fs *FS) Root() (fs.Node, error) {
 	return fs.root, nil
 }
 
+func (fs *FS) refNode(inode uint64) fs.Node {
+	fs.Lock()
+	defer fs.Unlock()
+
+	if ref, ok := fs.nodeRefs[inode]; ok {
+		fs.nodeRefs[inode] = nodeRef{
+			node:  ref.node,
+			count: ref.count + 1,
+		}
+		return ref.node
+	}
+
+	return nil
+}
+
+func (fs *FS) derefNode(inode uint64) {
+	fs.Lock()
+	defer fs.Unlock()
+
+	ref, ok := fs.nodeRefs[inode]
+	if !ok {
+		return // Nothing to do.
+	}
+
+	if ref.count <= 1 {
+		delete(fs.nodeRefs, inode)
+	} else {
+		fs.nodeRefs[inode] = nodeRef{
+			node:  ref.node,
+			count: ref.count - 1,
+		}
+	}
+}
+
+func (fs *FS) makeNode(entry stemma.DirectoryEntry, parent uint64) (node fs.Node, err error) {
+	inodeNum := inode(entry, parent)
+
+	// Reuse a cached node if possible.
+	if node = fs.refNode(inodeNum); node != nil {
+		return node, nil
+	}
+
+	header, err := fs.objects.GetHeader(entry.HeaderDigest)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get header from object store: %s", err)
+	}
+
+	attrBase := &attr{
+		fs:    fs,
+		inode: inodeNum,
+		size:  entry.ObjectSize,
+		time:  fs.time,
+		mode:  header.Mode,
+		uid:   header.UID,
+		gid:   header.GID,
+		rdev:  header.Rdev,
+	}
+
+	switch entry.Type {
+	case stemma.DirentTypeDirectory:
+		node = &Dir{
+			attr:   attrBase,
+			parent: parent,
+			digest: entry.ObjectDigest,
+		}
+	case stemma.DirentTypeRegular:
+		node = &File{
+			attr:   attrBase,
+			digest: entry.ObjectDigest,
+		}
+	case stemma.DirentTypeLink:
+		node = &Link{
+			attr:   attrBase,
+			target: entry.LinkTarget,
+		}
+	default:
+		node = attrBase
+	}
+
+	// Cache this node or get one that already exists (in case of race).
+	fs.Lock()
+	defer fs.Unlock()
+
+	if ref, ok := fs.nodeRefs[inodeNum]; ok {
+		fs.nodeRefs[inodeNum] = nodeRef{
+			node:  ref.node,
+			count: ref.count + 1,
+		}
+		node = ref.node
+	} else {
+		fs.nodeRefs[inodeNum] = nodeRef{
+			node:  node,
+			count: 1,
+		}
+	}
+
+	return node, nil
+}
+
 // attr contains common file attributes to meet the FUSE Attr() request.
 // TODO: get object store and header digest references to serve Xattrs.
 type attr struct {
+	fs *FS
+
 	inode uint64      // inode number
 	size  uint64      // size in bytes
 	time  time.Time   // time of last access, modification, change, creation
@@ -126,6 +244,10 @@ type attr struct {
 // Attr fills attr with the standard metadata for the node.
 func (a *attr) Attr(ctx context.Context, attr *fuse.Attr) error {
 	*attr = fuse.Attr{
+		// Cache for only a minute. The filesystem is read-only so we
+		// could probably just cache forever. This needs to be looked
+		// into further.
+		Valid:     time.Minute,
 		Inode:     a.inode,
 		Size:      a.size,
 		Atime:     a.time,
@@ -143,7 +265,14 @@ func (a *attr) Attr(ctx context.Context, attr *fuse.Attr) error {
 	return nil
 }
 
-var ecmaTable = crc64.MakeTable(crc64.ECMA)
+// Forget about this node. This node will not receive further
+// method calls.
+//
+// Forget is not necessarily seen on unmount, as all nodes are
+// implicitly forgotten as part part of the unmount.
+func (a *attr) Forget() {
+	a.fs.derefNode(a.inode)
+}
 
 // inode computes a random/unique inode number for the given directory
 // entry. The indode number should identify unique (header, object) pairs
@@ -151,7 +280,7 @@ var ecmaTable = crc64.MakeTable(crc64.ECMA)
 // symlink target. DO NOT consider the name of the entry. If the entry is a
 // directory, the parent inode number will be hashed into the value as well.
 func inode(de stemma.DirectoryEntry, parent uint64) uint64 {
-	hash := crc64.New(ecmaTable)
+	hash := sha512.New()
 
 	if de.Type == stemma.DirentTypeDirectory {
 		// Only hash the parent inode if this is a directory. This
@@ -165,7 +294,7 @@ func inode(de stemma.DirectoryEntry, parent uint64) uint64 {
 	hash.Write([]byte(de.ObjectDigest))
 	hash.Write([]byte(de.LinkTarget))
 
-	return hash.Sum64()
+	return binary.LittleEndian.Uint64(hash.Sum(nil))
 }
 
 // fuseDirentTypes stores a mapping of stemma dirent types to fuse dirent
@@ -184,16 +313,15 @@ var fuseDirentTypes = map[stemma.DirentType]fuse.DirentType{
 // Dir represents a directory node.
 type Dir struct {
 	*attr
-	parent  uint64
-	objects stemma.ObjectStore
-	digest  stemma.Digest
+	parent uint64
+	digest stemma.Digest
 
 	entries    stemma.Directory
-	entryIndex map[string]int //
+	entryIndex map[string]int
 }
 
 func (d *Dir) load() error {
-	entries, err := d.objects.GetDirectory(d.digest)
+	entries, err := d.fs.objects.GetDirectory(d.digest)
 	if err != nil {
 		return fmt.Errorf("unable to get directory object store: %s", err)
 	}
@@ -261,57 +389,14 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		return nil, fuse.ENOENT
 	}
 
-	entry := d.entries[i]
-
-	return subNode(d.objects, entry, d.attr.time, d.inode)
-}
-
-func subNode(objects stemma.ObjectStore, entry stemma.DirectoryEntry, nodeTime time.Time, parent uint64) (fs.Node, error) {
-	header, err := objects.GetHeader(entry.HeaderDigest)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get header from object store: %s", err)
-	}
-
-	attrBase := &attr{
-		inode: inode(entry, parent),
-		size:  entry.ObjectSize,
-		time:  nodeTime,
-		mode:  header.Mode,
-		uid:   header.UID,
-		gid:   header.GID,
-		rdev:  header.Rdev,
-	}
-
-	switch entry.Type {
-	case stemma.DirentTypeDirectory:
-		return &Dir{
-			attr:    attrBase,
-			parent:  parent,
-			objects: objects,
-			digest:  entry.ObjectDigest,
-		}, nil
-	case stemma.DirentTypeRegular:
-		return &File{
-			attr:    attrBase,
-			objects: objects,
-			digest:  entry.ObjectDigest,
-		}, nil
-	case stemma.DirentTypeLink:
-		return &Link{
-			attr:   attrBase,
-			target: entry.LinkTarget,
-		}, nil
-	default:
-		return attrBase, nil
-	}
+	return d.fs.makeNode(d.entries[i], d.inode)
 }
 
 // File represents a file node.
 type File struct {
 	*attr
-	objects stemma.ObjectStore
-	digest  stemma.Digest
-	rsc     stemma.ReadSeekCloser
+	digest stemma.Digest
+	rsc    stemma.ReadSeekCloser
 }
 
 // Open opens the receiver. After a successful open, a client
@@ -325,7 +410,7 @@ type File struct {
 //
 // XXX note about access.  XXX OpenFlags.
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
-	rsc, err := f.objects.GetFile(f.digest)
+	rsc, err := f.fs.objects.GetFile(f.digest)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get file from object store: %s", err)
 	}

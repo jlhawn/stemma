@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -91,10 +92,14 @@ func newFS(objects stemma.ObjectStore, appDigest stemma.Digest) (*FS, error) {
 		SubObjectsSize: app.Rootfs.Directory.SubObjectsSize,
 	}
 
-	rootNode, err := subNode(objects, entry, time.Now())
+	var rootInode uint64
+	rootNode, err := subNode(objects, entry, time.Now(), rootInode)
 	if err != nil {
 		return nil, fmt.Errorf("unable to make root node: %s", err)
 	}
+
+	// Hack to make the root dir have the same inode and parent inode.
+	rootNode.(*Dir).inode = rootInode
 
 	return &FS{
 		root: rootNode,
@@ -143,9 +148,18 @@ var ecmaTable = crc64.MakeTable(crc64.ECMA)
 // inode computes a random/unique inode number for the given directory
 // entry. The indode number should identify unique (header, object) pairs
 // so we can't just use the object digest. We should also consider the
-// symlink target. DO NOT consider the name of the entry.
-func inode(de stemma.DirectoryEntry) uint64 {
+// symlink target. DO NOT consider the name of the entry. If the entry is a
+// directory, the parent inode number will be hashed into the value as well.
+func inode(de stemma.DirectoryEntry, parent uint64) uint64 {
 	hash := crc64.New(ecmaTable)
+
+	if de.Type == stemma.DirentTypeDirectory {
+		// Only hash the parent inode if this is a directory. This
+		// helps ensure that no 2 directories have the same inode as
+		// hard links to directories are not allowed (what would ".."
+		// mean?).
+		binary.Write(hash, binary.LittleEndian, parent)
+	}
 
 	hash.Write([]byte(de.HeaderDigest))
 	hash.Write([]byte(de.ObjectDigest))
@@ -167,27 +181,62 @@ var fuseDirentTypes = map[stemma.DirentType]fuse.DirentType{
 	stemma.DirentTypeSocket:      fuse.DT_Socket,
 }
 
-// Dir implements both Node and Handle for a directory.
+// Dir represents a directory node.
 type Dir struct {
 	*attr
+	parent  uint64
 	objects stemma.ObjectStore
 	digest  stemma.Digest
+
+	entries    stemma.Directory
+	entryIndex map[string]int //
+}
+
+func (d *Dir) load() error {
+	entries, err := d.objects.GetDirectory(d.digest)
+	if err != nil {
+		return fmt.Errorf("unable to get directory object store: %s", err)
+	}
+
+	d.entries = entries
+	d.entryIndex = make(map[string]int, len(entries))
+	for i, de := range entries {
+		d.entryIndex[de.Name] = i
+	}
+
+	return nil
 }
 
 // ReadDirAll returns a list of entries from this directory.
 func (d *Dir) ReadDirAll(ctx context.Context) (fuseEntries []fuse.Dirent, err error) {
-	directory, err := d.objects.GetDirectory(d.digest)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get directory from object store: %s", err)
+	// Ensure that entries have been loaded.
+	if d.entries == nil {
+		if err := d.load(); err != nil {
+			return nil, err
+		}
 	}
 
-	fuseEntries = make([]fuse.Dirent, len(directory))
-	for i, entry := range directory {
-		fuseEntries[i] = fuse.Dirent{
-			Inode: inode(entry),
+	currentDir := fuse.Dirent{
+		Inode: d.inode,
+		Type:  fuse.DT_Dir,
+		Name:  ".",
+	}
+	parentDir := fuse.Dirent{
+		Inode: d.parent,
+		Type:  fuse.DT_Dir,
+		Name:  "..",
+	}
+
+	// Allocate space for every directory entry, including "." and "..".
+	fuseEntries = make([]fuse.Dirent, 0, len(d.entries)+2)
+	fuseEntries = append(fuseEntries, currentDir, parentDir)
+
+	for _, entry := range d.entries {
+		fuseEntries = append(fuseEntries, fuse.Dirent{
+			Inode: inode(entry, d.inode),
 			Type:  fuseDirentTypes[entry.Type],
 			Name:  entry.Name,
-		}
+		})
 	}
 
 	return fuseEntries, nil
@@ -200,30 +249,31 @@ func (d *Dir) ReadDirAll(ctx context.Context) (fuseEntries []fuse.Dirent, err er
 //
 // Lookup need not to handle the names "." and "..".
 func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
-	directory, err := d.objects.GetDirectory(d.digest)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get directory from object store: %s", err)
-	}
-
-	for _, entry := range directory {
-		if entry.Name != name {
-			continue
+	// Ensure that entries have been loaded.
+	if d.entries == nil {
+		if err := d.load(); err != nil {
+			return nil, err
 		}
-
-		return subNode(d.objects, entry, d.attr.time)
 	}
 
-	return nil, fuse.ENOENT
+	i, ok := d.entryIndex[name]
+	if !ok {
+		return nil, fuse.ENOENT
+	}
+
+	entry := d.entries[i]
+
+	return subNode(d.objects, entry, d.attr.time, d.inode)
 }
 
-func subNode(objects stemma.ObjectStore, entry stemma.DirectoryEntry, nodeTime time.Time) (fs.Node, error) {
+func subNode(objects stemma.ObjectStore, entry stemma.DirectoryEntry, nodeTime time.Time, parent uint64) (fs.Node, error) {
 	header, err := objects.GetHeader(entry.HeaderDigest)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get header from object store: %s", err)
 	}
 
 	attrBase := &attr{
-		inode: inode(entry),
+		inode: inode(entry, parent),
 		size:  entry.ObjectSize,
 		time:  nodeTime,
 		mode:  header.Mode,
@@ -236,6 +286,7 @@ func subNode(objects stemma.ObjectStore, entry stemma.DirectoryEntry, nodeTime t
 	case stemma.DirentTypeDirectory:
 		return &Dir{
 			attr:    attrBase,
+			parent:  parent,
 			objects: objects,
 			digest:  entry.ObjectDigest,
 		}, nil

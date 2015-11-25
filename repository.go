@@ -73,7 +73,7 @@ func (r *Repository) getObjectPath(digest Digest) string {
 	return filepath.Join(r.root, "objects", digestHex[:2], digestHex[2:4], digestHex[4:6], digestHex[6:])
 }
 
-func (r *Repository) getObjectFile(digest Digest) (io.ReadCloser, error) {
+func (r *Repository) getObjectFile(digest Digest) (ReadSeekCloser, error) {
 	objectPath := r.getObjectPath(digest)
 
 	return os.Open(objectPath)

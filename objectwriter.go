@@ -103,7 +103,7 @@ func (w *objectWriter) Cancel() error {
 }
 
 // GetFile opens the file object with the given digest from this repository.
-func (r *Repository) GetFile(digest Digest) (io.ReadCloser, error) {
+func (r *Repository) GetFile(digest Digest) (ReadSeekCloser, error) {
 	return r.getObjectFile(digest)
 }
 

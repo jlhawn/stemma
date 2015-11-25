@@ -30,6 +30,13 @@ func (ot ObjectType) String() string {
 	}
 }
 
+// ReadSeekCloser is a combination reader, seeker, and closer.
+type ReadSeekCloser interface {
+	io.Reader
+	io.Seeker
+	io.Closer
+}
+
 // ObjectStore is the interface for managing content-addressable objects.
 type ObjectStore interface {
 	// Get the header object with the given digest from this store.
@@ -37,7 +44,7 @@ type ObjectStore interface {
 	// Put the given header into this object store.
 	PutHeader(header Header) (Descriptor, error)
 	// Get the file object with the given digest from this store.
-	GetFile(digest Digest) (io.ReadCloser, error)
+	GetFile(digest Digest) (ReadSeekCloser, error)
 	// NewWriter begins the process of writing a new file using this store.
 	NewFileWriter() (FileWriter, error)
 	// Get the directory with the given digest from this store.

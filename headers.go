@@ -48,19 +48,28 @@ func NewHeader(path string) (Header, error) {
 	case syscall.S_IFSOCK:
 		mode |= os.ModeSocket
 	}
-	if mode&syscall.S_ISGID != 0 {
+
+	if stat.Mode&syscall.S_ISGID != 0 {
 		mode |= os.ModeSetgid
 	}
-	if mode&syscall.S_ISUID != 0 {
+	if stat.Mode&syscall.S_ISUID != 0 {
 		mode |= os.ModeSetuid
 	}
-	if mode&syscall.S_ISVTX != 0 {
+	if stat.Mode&syscall.S_ISVTX != 0 {
 		mode |= os.ModeSticky
 	}
 
-	xattrs, err := sysutil.GetXattrs(path)
-	if err != nil {
-		return Header{}, fmt.Errorf("unable to get xattrs for path %q: %s", path, err)
+	var (
+		xattrs sysutil.Xattrs
+		err    error
+	)
+
+	// FIXME: xattrs on symlinks not currently supported.
+	if mode&os.ModeSymlink == 0 {
+		xattrs, err = sysutil.GetXattrs(path)
+		if err != nil {
+			return Header{}, fmt.Errorf("unable to get xattrs for path %q: %s", path, err)
+		}
 	}
 
 	return Header{

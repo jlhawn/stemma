@@ -14,6 +14,7 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/jlhawn/stemma"
+	"github.com/jlhawn/stemma/sysutil"
 	"golang.org/x/net/context"
 )
 
@@ -176,14 +177,16 @@ func (fs *FS) makeNode(entry stemma.DirectoryEntry, parent uint64) (node fs.Node
 	}
 
 	attrBase := &attr{
-		fs:    fs,
-		inode: inodeNum,
-		size:  entry.ObjectSize,
-		time:  fs.time,
-		mode:  header.Mode,
-		uid:   header.UID,
-		gid:   header.GID,
-		rdev:  header.Rdev,
+		fs:          fs,
+		inode:       inodeNum,
+		size:        entry.ObjectSize,
+		time:        fs.time,
+		mode:        header.Mode,
+		uid:         header.UID,
+		gid:         header.GID,
+		rdev:        header.Rdev,
+		xattrLookup: header.Xattrs,
+		xattrs:      sysutil.NewXattrs(header.Xattrs),
 	}
 
 	switch entry.Type {
@@ -228,7 +231,6 @@ func (fs *FS) makeNode(entry stemma.DirectoryEntry, parent uint64) (node fs.Node
 }
 
 // attr contains common file attributes to meet the FUSE Attr() request.
-// TODO: get object store and header digest references to serve Xattrs.
 type attr struct {
 	fs *FS
 
@@ -239,6 +241,9 @@ type attr struct {
 	uid   uint32      // owner uid
 	gid   uint32      // group gid
 	rdev  uint32      // device numbers
+
+	xattrLookup map[string][]byte
+	xattrs      sysutil.Xattrs
 }
 
 // Attr fills attr with the standard metadata for the node.
@@ -260,6 +265,36 @@ func (a *attr) Attr(ctx context.Context, attr *fuse.Attr) error {
 		Gid:       a.gid,
 		Rdev:      a.rdev,
 		BlockSize: 4096,
+	}
+
+	return nil
+}
+
+// Getxattr gets an extended attribute by the given name from the
+// node. Request vars are Size, Name, and Position.
+//
+// If there is no xattr by that name, returns fuse.ErrNoXattr.
+func (a *attr) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, resp *fuse.GetxattrResponse) error {
+	val, ok := a.xattrLookup[req.Name]
+	if !ok {
+		return fuse.ErrNoXattr
+	}
+
+	if req.Position >= uint32(len(val)) {
+		return nil
+	}
+
+	resp.Xattr = make([]byte, len(val))
+	copy(resp.Xattr, val)
+
+	return nil
+}
+
+// Listxattr lists the extended attributes recorded for the node. Request vars
+// are Size and Position.
+func (a *attr) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, resp *fuse.ListxattrResponse) error {
+	for i := req.Position; i < uint32(len(a.xattrs)); i++ {
+		resp.Append(a.xattrs[i].Key)
 	}
 
 	return nil

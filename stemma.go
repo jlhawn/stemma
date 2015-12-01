@@ -1,6 +1,7 @@
 package stemma
 
 import (
+	"fmt"
 	"io"
 )
 
@@ -14,6 +15,10 @@ const (
 	ObjectTypeHeader
 	ObjectTypeApplication
 )
+
+// EncodedObjectTypeSize is the size in bytes for an encoded object type which
+// is placed at the begining of all object files.
+const EncodedObjectTypeSize = 1
 
 func (ot ObjectType) String() string {
 	switch ot {
@@ -30,6 +35,41 @@ func (ot ObjectType) String() string {
 	}
 }
 
+// Marshal writes this object type as a single byte header for objects using
+// the given writer.
+func (ot ObjectType) Marshal(w io.Writer) error {
+	if _, err := w.Write([]byte{byte(ot)}); err != nil {
+		return fmt.Errorf("unable to write object type: %s", err)
+	}
+
+	return nil
+}
+
+// UnmarshalObjectType reads an encoded ObjectType from the given reader.
+func UnmarshalObjectType(r io.Reader) (ot ObjectType, err error) {
+	buf := make([]byte, 1)
+	if _, err := r.Read(buf); err != nil {
+		return ot, fmt.Errorf("unable to read object type: %s", err)
+	}
+
+	return ObjectType(buf[0]), nil
+}
+
+// EnsureObjectType reads from the given reader to unmarshal an object type.
+// The decoded object type is checked to ensure it is equal to the expected.
+func EnsureObjectType(r io.Reader, expected ObjectType) error {
+	actual, err := UnmarshalObjectType(r)
+	if err != nil {
+		return fmt.Errorf("unable to decode object type: %s", err)
+	}
+
+	if actual != expected {
+		return fmt.Errorf("invalid object type: expected %s, got %s", expected, actual)
+	}
+
+	return nil
+}
+
 // ReadSeekCloser is a combination reader, seeker, and closer.
 type ReadSeekCloser interface {
 	io.Reader
@@ -39,6 +79,8 @@ type ReadSeekCloser interface {
 
 // ObjectStore is the interface for managing content-addressable objects.
 type ObjectStore interface {
+	// Whether an object with the given digest exists in this store.
+	Contains(digest Digest) bool
 	// Get the header object with the given digest from this store.
 	GetHeader(digest Digest) (Header, error)
 	// Put the given header into this object store.

@@ -168,6 +168,10 @@ func (r *Repository) GetHeader(digest Digest) (header Header, err error) {
 
 	defer object.Close()
 
+	if err := EnsureObjectType(object, ObjectTypeHeader); err != nil {
+		return header, err
+	}
+
 	header, err = UnmarshalHeader(object)
 	if err != nil {
 		return header, fmt.Errorf("unable to decode header object: %s", err)

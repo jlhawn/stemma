@@ -1,6 +1,7 @@
 package stemma
 
 import (
+	"container/list"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -49,7 +50,7 @@ func (d *descriptor) SubObjectsSize() uint64 {
 }
 
 // marshal marshals this descriptor to its binary encoding to the given writer.
-func marshalDescriptor(w io.Writer, d Descriptor) error {
+func MarshalDescriptor(w io.Writer, d Descriptor) error {
 	if err := d.Digest().Marshal(w); err != nil {
 		return fmt.Errorf("unable to encode object digest: %s", err)
 	}
@@ -75,7 +76,7 @@ func marshalDescriptor(w io.Writer, d Descriptor) error {
 
 // unmarshalDescriptor unmarshals a descriptor object from its binary encoding
 // from the given reader.
-func unmarshalDescriptor(r io.Reader) (Descriptor, error) {
+func UnmarshalDescriptor(r io.Reader) (Descriptor, error) {
 	var (
 		d   descriptor
 		err error
@@ -104,4 +105,79 @@ func unmarshalDescriptor(r io.Reader) (Descriptor, error) {
 	}
 
 	return &d, nil
+}
+
+// DescriptorQueue is a FIFO queue of object descriptors.
+type DescriptorQueue interface {
+	Len() int
+	Empty() bool
+	Full() bool
+	PushBack(desc Descriptor)
+	Peek() Descriptor
+	Pop() Descriptor
+}
+
+// DescriptorStack is a LIFO queue of object descriptors.
+type DescriptorStack interface {
+	Len() int
+	Empty() bool
+	Full() bool
+	PushFront(desc Descriptor)
+	Peek() Descriptor
+	Pop() Descriptor
+}
+
+// descriptorList is a list of object descriptors.
+type descriptorList struct {
+	list.List
+	maxSize int
+}
+
+// NewDescriptorList creates a new descriptorList with the given (advisory)
+// maximum size. If maxSize <= 0, Full() will always return false.
+func newDescriptorList(maxSize int) *descriptorList {
+	return &descriptorList{
+		List:    list.List{},
+		maxSize: maxSize,
+	}
+}
+
+// NewDescriptorQueue creates a new FIFO queue with the given (advisory)
+// maximum size. If maxSize <= 0, Full() will always return false.
+func NewDescriptorQueue(maxSize int) DescriptorQueue {
+	return newDescriptorList(maxSize)
+}
+
+// NewDescriptorStack creates a new LIFO queue with the given (advisory)
+// maximum size. If maxSize <= 0, Full() will always return false.
+func NewDescriptorStack(maxSize int) DescriptorStack {
+	return newDescriptorList(maxSize)
+}
+
+func (l *descriptorList) Empty() bool {
+	return l.Len() == 0
+}
+
+func (l *descriptorList) Full() bool {
+	if l.maxSize <= 0 {
+		return false
+	}
+
+	return l.Len() >= l.maxSize
+}
+
+func (l *descriptorList) PushBack(desc Descriptor) {
+	l.List.PushBack(desc)
+}
+
+func (l *descriptorList) PushFront(desc Descriptor) {
+	l.List.PushFront(desc)
+}
+
+func (l *descriptorList) Peek() Descriptor {
+	return l.Front().Value.(Descriptor)
+}
+
+func (l *descriptorList) Pop() Descriptor {
+	return l.Remove(l.Front()).(Descriptor)
 }

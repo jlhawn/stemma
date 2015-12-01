@@ -25,6 +25,15 @@ type RootfsHeader struct {
 	Size   uint64
 }
 
+// Descriptor returns a descriptor for the rootfs header object.
+func (h RootfsHeader) Descriptor() Descriptor {
+	return &descriptor{
+		digest:     h.Digest,
+		size:       h.Size,
+		objectType: ObjectTypeHeader,
+	}
+}
+
 // RootfsDirectory describes the rootfs directory object for an application
 // container.
 type RootfsDirectory struct {
@@ -32,6 +41,17 @@ type RootfsDirectory struct {
 	Size           uint64
 	NumSubObjects  uint32
 	SubObjectsSize uint64
+}
+
+// Descriptor returns a descriptor for the rootfs directory object.
+func (d RootfsDirectory) Descriptor() Descriptor {
+	return &descriptor{
+		digest:         d.Digest,
+		size:           d.Size,
+		objectType:     ObjectTypeDirectory,
+		numSubObjects:  d.NumSubObjects,
+		subObjectsSize: d.SubObjectsSize,
+	}
 }
 
 // GetApplication gets the application object with the given digest from this
@@ -43,6 +63,10 @@ func (r *Repository) GetApplication(digest Digest) (a Application, err error) {
 	}
 
 	defer object.Close()
+
+	if err := EnsureObjectType(object, ObjectTypeApplication); err != nil {
+		return a, err
+	}
 
 	a, err = UnmarshalApplication(object)
 	if err != nil {
@@ -76,6 +100,14 @@ func (r *Repository) PutApplication(a Application) (Descriptor, error) {
 		numSubObjects:  2 + a.Rootfs.Directory.NumSubObjects, // Header, Directory, and Directory subobjects.
 		subObjectsSize: a.Rootfs.Header.Size + a.Rootfs.Directory.Size + a.Rootfs.Directory.SubObjectsSize,
 	}, nil
+}
+
+// Dependencies returs a list of Descriptors for the dependencies of this app.
+func (a Application) Dependencies() []Descriptor {
+	return []Descriptor{
+		a.Rootfs.Header.Descriptor(),
+		a.Rootfs.Directory.Descriptor(),
+	}
 }
 
 // Marshal marshals this application to a binary encoding (little-endian) to

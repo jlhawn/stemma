@@ -1,8 +1,10 @@
 package stemma
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,7 +48,7 @@ func (s *tagStore) Get(tag string) (Descriptor, error) {
 	}
 	defer descObj.Close()
 
-	return unmarshalDescriptor(descObj)
+	return UnmarshalDescriptor(descObj)
 }
 
 func (s *tagStore) Set(tag string, desc Descriptor) error {
@@ -60,7 +62,7 @@ func (s *tagStore) Set(tag string, desc Descriptor) error {
 	}
 	defer descObj.Close()
 
-	return marshalDescriptor(descObj, desc)
+	return MarshalDescriptor(descObj, desc)
 }
 
 func (s *tagStore) List() (tags []string, err error) {
@@ -90,4 +92,57 @@ func (r *Repository) ResolveRef(ref string) (Digest, error) {
 	}
 
 	return desc.Digest(), nil
+}
+
+func MarshalTagDescriptors(w io.Writer, tagDescriptors map[string]Descriptor) error {
+	if err := binary.Write(w, binary.LittleEndian, uint32(len(tagDescriptors))); err != nil {
+		return fmt.Errorf("unable to encode length of tag descriptors: %s", err)
+	}
+
+	for tag, desc := range tagDescriptors {
+		tagBytes := []byte(tag)
+		if err := binary.Write(w, binary.LittleEndian, uint32(len(tagBytes))); err != nil {
+			return fmt.Errorf("unable to encode length of tag bytes: %s", err)
+		}
+
+		if _, err := w.Write(tagBytes); err != nil {
+			return fmt.Errorf("unable to write tag bytes: %s", err)
+		}
+
+		if err := MarshalDescriptor(w, desc); err != nil {
+			return fmt.Errorf("unable to encode descriptor: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func UnmarshalTagDescriptors(r io.Reader) (tagDescriptors map[string]Descriptor, err error) {
+	var numTags uint32
+	if err := binary.Read(r, binary.LittleEndian, &numTags); err != nil {
+		return nil, fmt.Errorf("unable to decode length of tag descriptors: %s", err)
+	}
+
+	tagDescriptors = make(map[string]Descriptor, numTags)
+
+	for i := uint32(0); i < numTags; i++ {
+		var numTagBytes uint32
+		if err := binary.Read(r, binary.LittleEndian, &numTagBytes); err != nil {
+			return nil, fmt.Errorf("unable to decode length of tag bytes: %s", err)
+		}
+
+		tagBuf := make([]byte, numTagBytes)
+		if _, err := io.ReadFull(r, tagBuf); err != nil {
+			return nil, fmt.Errorf("unable to read tag bytes: %s", err)
+		}
+
+		desc, err := UnmarshalDescriptor(r)
+		if err != nil {
+			return nil, fmt.Errorf("unable to decode descriptor: %s", err)
+		}
+
+		tagDescriptors[string(tagBuf)] = desc
+	}
+
+	return tagDescriptors, nil
 }

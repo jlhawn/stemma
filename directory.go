@@ -123,6 +123,21 @@ func (d Directory) TotalSubOjbectSize() uint64 {
 	return objectSize
 }
 
+// Dependencies returns a list of Descriptors for the objects inside this
+// directory.
+func (d Directory) Dependencies() []Descriptor {
+	descriptors := make([]Descriptor, 0, 2*len(d))
+
+	for _, entry := range d {
+		descriptors = append(descriptors, entry.HeaderDescriptor())
+		if objDesc := entry.ObjectDescriptor(); objDesc != nil {
+			descriptors = append(descriptors, objDesc)
+		}
+	}
+
+	return descriptors
+}
+
 func (d Directory) Len() int {
 	return len(d)
 }
@@ -204,6 +219,10 @@ func (r *Repository) GetDirectory(digest Digest) (Directory, error) {
 	}
 
 	defer object.Close()
+
+	if err := EnsureObjectType(object, ObjectTypeDirectory); err != nil {
+		return nil, err
+	}
 
 	return UnmarshalDirectory(object)
 }

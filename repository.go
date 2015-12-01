@@ -88,6 +88,16 @@ func (r *Repository) tempFile() (*os.File, error) {
 	return ioutil.TempFile(tempDir, "")
 }
 
+// Contains returns whether an object with the given digest exists in this
+// repository.
+func (r *Repository) Contains(digest Digest) bool {
+	objectPath := r.getObjectPath(digest)
+
+	_, err := os.Lstat(objectPath)
+
+	return err == nil
+}
+
 /*
 Repository Layout:
 

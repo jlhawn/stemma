@@ -1,6 +1,7 @@
 package stemma
 
 import (
+	"bytes"
 	"crypto"
 	"encoding/hex"
 	"errors"
@@ -97,6 +98,11 @@ func (d Digest) Bytes() []byte {
 	buf := make([]byte, len(d))
 	copy(buf, []byte(d))
 	return buf
+}
+
+// Equals returns whether this digest is equal to the given other digest.
+func (d Digest) Equals(other Digest) bool {
+	return bytes.Equal([]byte(d), []byte(other))
 }
 
 // Hex returns the hexadecimal encoding of this digest.

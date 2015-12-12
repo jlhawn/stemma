@@ -1,4 +1,0 @@
-[submodule "vendor/bazil.org/fuse"]
-  path = vendor/bazil.org/fuse
-  url = https://github.com/jlhawn/fuse.git
-

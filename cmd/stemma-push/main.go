@@ -14,7 +14,7 @@ func main() {
 	flag.Parse()
 
 	if flag.NArg() < 2 {
-		fmt.Println("Usage: stemma-fetch REMOTE TAG")
+		fmt.Println("Usage: stemma-push REMOTE TAG")
 		os.Exit(1)
 	}
 
@@ -29,18 +29,9 @@ func main() {
 	}
 
 	ref := flag.Arg(1)
-	desc, err := remote.GetTag(ref)
+	desc, err := repo.TagStore().Get(ref)
 	if err != nil {
-		log.Fatalf("unable to resolve remote reference: %s", err)
-	}
-
-	if repo.Contains(desc.Digest()) {
-		if err := repo.TagStore().Set(ref, desc); err != nil {
-			log.Fatalf("unable to set local tag: %s", err)
-		}
-
-		fmt.Println("Already up to date.")
-		os.Exit(0)
+		log.Fatalf("unable to resolve reference: %s", err)
 	}
 
 	progress := &stemma.ProgressMeter{
@@ -65,16 +56,12 @@ func main() {
 		}
 	}()
 
-	if err := remote.Fetch(desc, progress); err != nil {
-		log.Fatalf("unable to fetch from remote: %s", err)
+	if err := remote.Push(desc, progress); err != nil {
+		log.Fatalf("unable to push to remote: %s", err)
 	}
 
 	done <- 1
 	<-done
-
-	if err := repo.TagStore().Set(ref, desc); err != nil {
-		log.Fatalf("unable to set local tag: %s", err)
-	}
 
 	fmt.Printf("\nSkipped Objects: %10d %6s\n", progress.SkippedObjects, humanSize(progress.SkippedSize))
 }

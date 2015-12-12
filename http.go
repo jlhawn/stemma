@@ -210,9 +210,6 @@ func (r *Repository) HandleServeObjects(rw http.ResponseWriter, req *http.Reques
 
 	defer conn.Close()
 
-	// Flush the options to make sure the client sets the raw mode.
-	conn.Write([]byte{})
-
 	fmt.Fprint(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 
 	if err := r.serveObjects(buf, &ProgressMeter{}); err != nil {
@@ -262,6 +259,10 @@ func (ros *remoteObjectStore) Push(desc Descriptor, progress *ProgressMeter) err
 }
 
 func (r *Repository) HandleReceiveObjects(rw http.ResponseWriter, req *http.Request) {
+	req.ParseForm()
+
+	tag := req.Form.Get("tag")
+
 	hijacker, ok := rw.(http.Hijacker)
 	if !ok {
 		log.Print("http hijacking not supported")
@@ -278,9 +279,6 @@ func (r *Repository) HandleReceiveObjects(rw http.ResponseWriter, req *http.Requ
 
 	defer conn.Close()
 
-	// Flush the options to make sure the client sets the raw mode.
-	conn.Write([]byte{})
-
 	fmt.Fprint(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 
 	// First, read a descriptor for the object that the remote would like
@@ -294,8 +292,6 @@ func (r *Repository) HandleReceiveObjects(rw http.ResponseWriter, req *http.Requ
 	// Get a remote object fetcher.
 	fetcher := newRemoteObjectFetcher(buf)
 
-	defer fetcher.SignalDone()
-
 	if r.Contains(desc.Digest()) {
 		fetcher.SkipObject(desc)
 		return
@@ -304,4 +300,6 @@ func (r *Repository) HandleReceiveObjects(rw http.ResponseWriter, req *http.Requ
 	if err := r.fetchObjects(fetcher, desc, &ProgressMeter{}); err != nil {
 		log.Printf("unable to fetch objects: %s", err)
 	}
+
+	r.TagStore().Set(tag, desc)
 }
